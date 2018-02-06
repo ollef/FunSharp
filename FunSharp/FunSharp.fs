@@ -96,11 +96,13 @@ type Type =
     | Int
     | Fun of Type * Type
     | UVar of int * Type option ref
+    | TVar of Ident
+    | Forall of Ident * Type
 
-let fresh = ref 0
+let freshU = ref 0
 let newUVar () = 
-    let n = !fresh
-    fresh := n + 1
+    let n = !freshU
+    freshU := n + 1
     UVar (n, ref None)
 
 let rec zonk typ =
@@ -110,17 +112,22 @@ let rec zonk typ =
     | UVar (_, r) ->
         match !r with
         | None -> typ
-        | Some typ' -> zonk typ'
+        | Some typ' ->
+            let typ'' = zonk typ'
+            r := Some typ''
+            typ''
+    | TVar v -> TVar v
+    | Forall (v, t) -> Forall (v, zonk t)
 
 let rec unify type1 type2 =
     let ztype1 = zonk type1
     let ztype2 = zonk type2
     match (ztype1, ztype2) with
     | _ when ztype1 = ztype2 -> ()
-    | (Int, Int) -> ()
     | (Fun (arg1, res1), Fun (arg2, res2)) ->
         unify arg1 arg2
         unify res1 res2
+    | (Forall (_, t1), Forall (_, t2)) -> unify t1 t2
     | (UVar (_, v1), _) -> v1 := Some ztype2
     | (_, UVar (_, v2)) -> v2 := Some ztype1
     | _ -> failwith ("Can't unify " + string ztype1 + " and " + string ztype2) 
@@ -165,6 +172,44 @@ let infer' expr =
     let (expr, typ) = infer expr Map.empty
     (zonkExpr expr, zonk typ)
 
+let freshT = ref 0
+let freshName () = 
+    let i = !freshT
+    freshT := i + 1
+    "x" + string i
+
+let rec foralls names typ =
+    match names with
+    | [] -> typ
+    | name::names' -> Forall (name, foralls names' typ)
+
+let rec unificationVars typ =
+    match typ with
+    | Int -> Set.empty
+    | Fun (arg, res) -> Set.union (unificationVars arg) (unificationVars res)
+    | UVar (n, _) -> Set.singleton n
+    | TVar _ -> Set.empty
+    | Forall (_, t) -> unificationVars t
+
+let rec freshNames n = List.init n (fun _ -> freshName ())
+
+let rec substUVars typ (map : Map<int, Type>) =
+    match typ with
+    | Int -> typ
+    | Fun (arg, res) -> Fun (substUVars arg map, substUVars res map)
+    | UVar (n, _) ->
+        match Map.tryFind n map with
+        | None -> typ
+        | Some typ' -> typ'
+    | TVar _ -> typ
+    | Forall (v, t) -> Forall (v, substUVars t map)
+
+let generalise typ =
+    let ztype = zonk typ
+    let uvars = Set.toList (unificationVars ztype)
+    let names = freshNames (List.length uvars)
+    foralls names (substUVars ztype (Map.ofList (List.zip uvars (List.map TVar names))))
+
 let expr1 = optimisticParse pexpr "123"
 let test1 = infer expr1 Map.empty
 let expr2 = optimisticParse pexpr "\\x. x"
@@ -178,3 +223,8 @@ let test4 = infer expr4 Map.empty
 
 let expr5 = optimisticParse pexpr "(\\x. x) 123"
 let test5 = infer' expr5
+
+let expr6 = optimisticParse pexpr "\\f. \\x. f x"
+let test6 =
+    let (expr, typ) = infer expr6 Map.empty
+    (expr, generalise typ)
