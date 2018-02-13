@@ -119,6 +119,19 @@ let rec zonk typ =
     | TVar v -> TVar v
     | Forall (v, t) -> Forall (v, zonk t)
 
+let rec unificationVars typ =
+    match typ with
+    | Int -> Set.empty
+    | Fun (arg, res) -> Set.union (unificationVars arg) (unificationVars res)
+    | UVar (n, r) -> Set.singleton (n, r)
+    | TVar _ -> Set.empty
+    | Forall (_, t) -> unificationVars t
+
+let rec occursCheck n typ =
+    if Set.contains n (unificationVars typ)
+    then failwith ("occurs check failed, " + string typ + "contains " + string n)
+    else ()
+
 let rec unify type1 type2 =
     let ztype1 = zonk type1
     let ztype2 = zonk type2
@@ -128,8 +141,12 @@ let rec unify type1 type2 =
         unify arg1 arg2
         unify res1 res2
     | (Forall (_, t1), Forall (_, t2)) -> unify t1 t2
-    | (UVar (_, v1), _) -> v1 := Some ztype2
-    | (_, UVar (_, v2)) -> v2 := Some ztype1
+    | (UVar (n, v1), _) ->
+        occursCheck (n, v1) ztype2
+        v1 := Some ztype2
+    | (_, UVar (n, v2)) ->
+        occursCheck (n, v2) ztype1
+        v2 := Some ztype1
     | _ -> failwith ("Can't unify " + string ztype1 + " and " + string ztype2) 
 
 type TypedExpr =
@@ -137,6 +154,8 @@ type TypedExpr =
     | Lit of int // n
     | Lam of Ident * Type * TypedExpr // \x. e
     | App of TypedExpr * TypedExpr // e e'
+    | TypeLam of Ident * TypedExpr // /\x. e
+    | TypeApp of TypedExpr * Type // e [t]
 
 let rec zonkExpr expr : TypedExpr =
     match expr with
@@ -144,6 +163,26 @@ let rec zonkExpr expr : TypedExpr =
     | TypedExpr.Lit i -> Lit i
     | TypedExpr.Lam (x, t, body) -> Lam (x, zonk t, zonkExpr body)
     | TypedExpr.App (func, arg) -> App (zonkExpr func, zonkExpr arg)
+    | TypedExpr.TypeLam (x, body) -> TypeLam (x, zonkExpr body)
+    | TypedExpr.TypeApp (e, t) -> TypeApp (zonkExpr e, zonk t)
+
+let rec typeSubst x subType typ =
+    match typ with
+    | Int -> typ
+    | Fun (arg, res) -> Fun (typeSubst x subType arg, typeSubst x subType res)
+    | UVar _ -> typ
+    | TVar x' when x = x' -> subType
+    | TVar _ -> typ
+    | Forall (x', _) when x = x' -> typ
+    | Forall (x', typ') -> Forall (x', typeSubst x subType typ')
+
+let rec instantiate expr typ =
+    match typ with
+    | Forall (x, typ') ->
+        let v = newUVar ()
+        let (expr', typ') = instantiate expr (typeSubst x v typ')
+        (TypeApp (expr', v), typ')
+    | _ -> (expr, typ)
 
 let rec check expr expectedType (env : Map<Ident, Type>) : TypedExpr =
     let (expr', exprType) = infer expr env
@@ -155,7 +194,8 @@ and infer expr (env : Map<Ident, Type>) : TypedExpr * Type =
     | Expr.Var v ->
         match Map.tryFind v env with
         | None -> failwith ("not in scope: " + v)
-        | Some varType -> (Var (v, varType), varType)
+        | Some varType ->
+            instantiate (Var (v, varType)) varType
     | Expr.Lit i -> (Lit i, Int)
     | Expr.Lam (x, body) ->
         let argType = newUVar ()
@@ -183,32 +223,22 @@ let rec foralls names typ =
     | [] -> typ
     | name::names' -> Forall (name, foralls names' typ)
 
-let rec unificationVars typ =
-    match typ with
-    | Int -> Set.empty
-    | Fun (arg, res) -> Set.union (unificationVars arg) (unificationVars res)
-    | UVar (n, _) -> Set.singleton n
-    | TVar _ -> Set.empty
-    | Forall (_, t) -> unificationVars t
+let rec typelams names expr =
+    match names with
+    | [] -> expr
+    | name::names' -> TypeLam (name, typelams names' expr)
 
 let rec freshNames n = List.init n (fun _ -> freshName ())
 
-let rec substUVars typ (map : Map<int, Type>) =
-    match typ with
-    | Int -> typ
-    | Fun (arg, res) -> Fun (substUVars arg map, substUVars res map)
-    | UVar (n, _) ->
-        match Map.tryFind n map with
-        | None -> typ
-        | Some typ' -> typ'
-    | TVar _ -> typ
-    | Forall (v, t) -> Forall (v, substUVars t map)
-
-let generalise typ =
+let generalise expr typ =
     let ztype = zonk typ
     let uvars = Set.toList (unificationVars ztype)
     let names = freshNames (List.length uvars)
-    foralls names (substUVars ztype (Map.ofList (List.zip uvars (List.map TVar names))))
+    for ((_, r), name) in List.zip uvars names do
+        r := Some (TVar name)
+    let expr' = zonkExpr (typelams names expr)
+    let typ' = zonk (foralls names typ)
+    (expr', typ')
 
 let expr1 = optimisticParse pexpr "123"
 let test1 = infer expr1 Map.empty
@@ -227,4 +257,15 @@ let test5 = infer' expr5
 let expr6 = optimisticParse pexpr "\\f. \\x. f x"
 let test6 =
     let (expr, typ) = infer expr6 Map.empty
-    (expr, generalise typ)
+    generalise expr typ
+
+// // Fails occurs check
+// let expr7 = optimisticParse pexpr "\\f. f f"
+// let test7 =
+//    let (expr, typ) = infer expr7 Map.empty
+//    (expr, generalise typ)
+
+let expr8 = optimisticParse pexpr "f 32"
+let test8 =
+    let (expr, typ) = infer expr8 (Map.add "f" (Forall ("a", Fun (TVar "a", TVar "a"))) Map.empty)
+    generalise expr typ
