@@ -1,5 +1,4 @@
-module FunSharp
-
+module FunSharp 
 open FParsec
 open System.Runtime.InteropServices
 open System
@@ -11,6 +10,14 @@ type Expr =
   | Lit of int // n
   | Lam of Ident * Expr // \x. e
   | App of Expr * Expr // e e'
+  | Anno of Expr * Type
+
+and Type =
+    | Int
+    | Fun of Type * Type
+    | UVar of int * Type option ref
+    | TVar of Ident
+    | Forall of Ident * Type
 
 let rec apps e es =
     match es with
@@ -67,6 +74,7 @@ let rec subst v e expr =
     | Lit _ -> expr
     | Lam (v', e') -> if v = v' then expr else Lam (v', subst v e e')
     | App (e1, e2) -> App (subst v e e1, subst v e e2)
+    | Anno (e', t) -> Anno (subst v e e', t)
 
 let rec evalSubst expr =
     match expr with
@@ -77,6 +85,7 @@ let rec evalSubst expr =
         match evalSubst e1 with
         | Lam (x, e1') -> evalSubst (subst x (evalSubst e2) e1')
         | e1' -> App (e1', evalSubst e2)
+    | Anno (e, _) -> evalSubst e
 
 let rec evalEnv (env : Map<Ident, Expr>) expr =
     printfn "%A %A" env expr
@@ -91,13 +100,7 @@ let rec evalEnv (env : Map<Ident, Expr>) expr =
         match evalEnv env e1 with
         | Lam (x, e1') -> evalEnv (Map.add x (evalEnv env e2) env) e1'
         | e1' -> App (e1', evalEnv env e2)
-
-type Type =
-    | Int
-    | Fun of Type * Type
-    | UVar of int * Type option ref
-    | TVar of Ident
-    | Forall of Ident * Type
+    | Anno (e, _) -> evalEnv env e
 
 let freshU = ref 0
 let newUVar () = 
@@ -207,6 +210,9 @@ and infer expr (env : Map<Ident, Type>) : TypedExpr * Type =
         let func' = check func (Fun (argType, retType)) env
         let arg' = check arg argType env
         (App (func', arg'), zonk retType)
+    | Expr.Anno (e, typ) ->
+        let e' = check e typ env
+        (e', typ)
 
 let infer' expr =
     let (expr, typ) = infer expr Map.empty
