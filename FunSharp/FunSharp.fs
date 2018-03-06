@@ -185,6 +185,22 @@ let rec typeSubst x subType typ =
     | Forall (x', _) when x = x' -> typ
     | Forall (x', typ') -> Forall (x', typeSubst x subType typ')
 
+let rec typeOf expr (env: Map<Ident, Type>): Type =
+    match expr with
+    | TypedExpr.Var (v, _) -> Map.find v env
+    | TypedExpr.Lit i -> Int
+    | TypedExpr.Lam (x, t, body) -> Fun (t, typeOf body (Map.add x t env))
+    | TypedExpr.App (func, _) ->
+        match typeOf func env with
+        | Fun (_, t2) -> t2
+        | _ -> failwith "typeOf: applying a non-function"
+    | TypedExpr.TypeLam (x, body) -> Forall (x, typeOf body env)
+    | TypedExpr.TypeApp (e, t) ->
+        match typeOf e env with
+        | Forall (x, t') -> typeSubst x t t'
+        | _ -> failwith "typeOf: type-applying a non-forall"
+    | TypedExpr.Let (x, t, _, e') -> typeOf e' (Map.add x t env)
+
 let rec instantiate expr typ =
     match typ with
     | Forall (x, typ') ->
