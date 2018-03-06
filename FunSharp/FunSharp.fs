@@ -11,6 +11,7 @@ type Expr =
   | Lam of Ident * Expr // \x. e
   | App of Expr * Expr // e e'
   | Anno of Expr * Type
+  | Let of Ident * Expr * Expr
 
 and Type =
     | Int
@@ -75,6 +76,7 @@ let rec subst v e expr =
     | Lam (v', e') -> if v = v' then expr else Lam (v', subst v e e')
     | App (e1, e2) -> App (subst v e e1, subst v e e2)
     | Anno (e', t) -> Anno (subst v e e', t)
+    | Let (v', e1, e2) -> Let (v', subst v e e1, if v = v' then e2 else subst v e e2)
 
 let rec evalSubst expr =
     match expr with
@@ -86,6 +88,7 @@ let rec evalSubst expr =
         | Lam (x, e1') -> evalSubst (subst x (evalSubst e2) e1')
         | e1' -> App (e1', evalSubst e2)
     | Anno (e, _) -> evalSubst e
+    | Let (v, e, e') -> evalSubst (subst v (evalSubst e) e')
 
 let rec evalEnv (env : Map<Ident, Expr>) expr =
     printfn "%A %A" env expr
@@ -101,6 +104,7 @@ let rec evalEnv (env : Map<Ident, Expr>) expr =
         | Lam (x, e1') -> evalEnv (Map.add x (evalEnv env e2) env) e1'
         | e1' -> App (e1', evalEnv env e2)
     | Anno (e, _) -> evalEnv env e
+    | Let (v, e, e') -> evalEnv (Map.add v (evalEnv env e) env) e'
 
 let freshU = ref 0
 let newUVar () = 
@@ -159,6 +163,7 @@ type TypedExpr =
     | App of TypedExpr * TypedExpr // e e'
     | TypeLam of Ident * TypedExpr // /\x. e
     | TypeApp of TypedExpr * Type // e [t]
+    | Let of Ident * Type * TypedExpr * TypedExpr
 
 let rec zonkExpr expr : TypedExpr =
     match expr with
@@ -168,6 +173,7 @@ let rec zonkExpr expr : TypedExpr =
     | TypedExpr.App (func, arg) -> App (zonkExpr func, zonkExpr arg)
     | TypedExpr.TypeLam (x, body) -> TypeLam (x, zonkExpr body)
     | TypedExpr.TypeApp (e, t) -> TypeApp (zonkExpr e, zonk t)
+    | TypedExpr.Let (x, t, e, e') -> Let (x, zonk t, zonkExpr e, zonkExpr e')
 
 let rec typeSubst x subType typ =
     match typ with
@@ -213,6 +219,10 @@ and infer expr (env : Map<Ident, Type>) : TypedExpr * Type =
     | Expr.Anno (e, typ) ->
         let e' = check e typ env
         (e', typ)
+    | Expr.Let (x, e1, e2) ->
+        let (e1', typ1) = infer e1 env
+        let (e2', typ2) = infer e2 (Map.add x typ1 env)
+        (Let (x, typ1, e1', e2'), typ2)
 
 let infer' expr =
     let (expr, typ) = infer expr Map.empty
